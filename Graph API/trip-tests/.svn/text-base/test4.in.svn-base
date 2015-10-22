@@ -1,0 +1,10 @@
+L Berkeley 5 5
+L Cal 4 4
+L GBC 2 3
+L ARC 3 2
+L ALD 1 1
+R Berkeley 2Pac 4 NS Cal
+R Cal Jazzy 3 NS GBC
+R GBC LongRoad 3 NS ARC
+R ARC ShortRoad 3 NS ALD
+R Berkeley VERYlongroad 500 NS ALD

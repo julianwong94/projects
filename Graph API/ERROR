@@ -1,0 +1,14 @@
+    @Test
+    public void removeOperations() {
+        DirectedGraph<String, String> g = new DirectedGraph<String, String>();
+        Graph<String, String>.Vertex v1 = g.add("1");
+        Graph<String, String>.Vertex v2 = g.add("2");
+        Graph<String, String>.Edge e1 = g.add(v1, v2, "3");
+        g.remove(e1);
+        assertEquals("Should have none", 0, g.edgeSize());
+        assertEquals("Should have no edges", 0, g.outDegree(v1));
+        g.remove(v1);
+        assertEquals("Should have one", 1, g.vertexSize());
+
+	In my graph file, I store an arraylist of edges and a hashmap of outedges and inedges, but the remove function, when I try to remove e1 (which is just 
+	arraylist.remove(e1)) it does not remove unless I define my own equals method for edges. 

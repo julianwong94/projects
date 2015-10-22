@@ -1,0 +1,235 @@
+#include "userprog/syscall.h"
+#include <stdio.h>
+#include <syscall-nr.h>
+#include "threads/interrupt.h"
+#include "threads/thread.h"
+#include "threads/vaddr.h"
+#include "threads/malloc.h"
+
+static void syscall_handler (struct intr_frame *);
+struct lock synch;
+
+void check_pointer(uint32_t *arg) {
+  if (!arg || is_kernel_vaddr(arg) || !pagedir_get_page (thread_current()->pagedir, arg)) {
+    printf("%s: exit(%d)\n", thread_current()->name, -1);
+    thread_current()->wait_status->exit_code = -1;
+    thread_exit();
+  }
+}
+
+int add_descriptor(struct file *item) {
+  int i;
+  for (i = 0; i < sizeof(thread_current()->descriptors)/4; i++) {
+    if (!thread_current()->descriptors[i]) {
+      thread_current()->descriptors[i] = item;
+      return i + 2;
+    }
+  }
+}
+
+struct file* get_descriptor(int descriptor) {
+  if (descriptor > 1 && descriptor < sizeof(thread_current()->descriptors) / 4) {
+    return thread_current()->descriptors[descriptor - 2];
+  }
+  return NULL;
+}
+
+struct file* remove_descriptor(int descriptor) {
+  if (descriptor > 1 && descriptor < sizeof(thread_current()->descriptors) / 4) {
+    struct file* item = thread_current()->descriptors[descriptor - 2];
+    thread_current()->descriptors[descriptor - 2] = NULL;
+    return item;
+  }
+  return NULL;
+}
+
+void cmd_halt(struct intr_frame *f, uint32_t *arg1 UNUSED, uint32_t *arg2 UNUSED, uint32_t *arg3 UNUSED)
+{
+  shutdown_power_off();
+}
+
+void cmd_exit(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2 UNUSED, uint32_t *arg3 UNUSED)
+{
+  check_pointer(arg1);
+  if (thread_current()->wait_status) {
+    thread_current()->wait_status->exit_code = *arg1;
+  }
+  printf("%s: exit(%d)\n", thread_current()->name, *arg1);
+  f->eax = (*arg1);
+  thread_exit();
+}
+
+void cmd_exec(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3) {
+  check_pointer(*arg1);
+  lock_acquire(&synch);
+  f->eax = process_execute(*arg1);
+  lock_release(&synch);
+}
+
+void cmd_wait(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3) {
+  check_pointer(arg1);
+  f->eax = process_wait(*arg1);
+}
+
+void cmd_create(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3) {
+  check_pointer(*arg1);
+  check_pointer(arg2);
+  lock_acquire(&synch);
+  if (strlen(*arg1) && strlen(*arg1) < 20) {
+    f->eax = filesys_create(*arg1, *arg2);
+  } else {
+    f->eax = 0;
+  }
+  lock_release(&synch);
+}
+
+void cmd_remove(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3) {
+  check_pointer(*arg1);
+  lock_acquire(&synch);
+  f->eax = filesys_remove(*arg1);
+  lock_release(&synch);
+}
+
+void cmd_open(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3) {
+  check_pointer(*arg1);
+  lock_acquire(&synch);
+  struct file *i = filesys_open(*arg1);
+  if (i) {
+    f->eax = add_descriptor(i);
+  } else {
+    f->eax = -1;
+  }
+  lock_release(&synch);
+}
+
+void cmd_filesize(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3) {
+  check_pointer(arg1);
+  lock_acquire(&synch);
+  f->eax = file_length(get_descriptor(*arg1));
+  lock_release(&synch);
+}
+
+void cmd_read(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3) {
+  check_pointer(arg1);
+  check_pointer(arg2);
+  check_pointer(*arg2);
+  check_pointer(arg3);
+  lock_acquire(&synch);
+  if (*arg2 == 0) {
+    f->eax = input_getc();
+  } else {
+    struct file *i = get_descriptor(*arg1);
+    if (i) {
+      f->eax = file_read(i, *arg2, *arg3);
+    } else {
+      f->eax = -1;
+    }
+  }
+  lock_release(&synch);
+}
+
+void cmd_write(struct intr_frame *f, uint32_t *arg1 UNUSED, uint32_t *arg2, uint32_t *arg3 UNUSED)
+{
+  check_pointer(arg1);
+  check_pointer(arg2);
+  check_pointer(*arg2);
+  check_pointer(arg3);
+  lock_acquire(&synch);
+  if (*arg1 == 1) {
+    int len = 0;
+    while (len + 256 < strlen(*arg2)) {
+      putbuf(*arg2 + len, 256);
+      len += 256;
+    }
+    putbuf(*arg2 + len, strlen(*arg2) - len);
+    f->eax = strlen(*arg2);
+  } else {
+    int descriptor = get_descriptor(*arg1);
+    if (descriptor) {
+      f->eax = file_write(descriptor, *arg2, *arg3);
+    } else {
+      f->eax = 0;
+    }
+  }
+  lock_release(&synch);
+}
+
+void cmd_seek(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t arg3) {
+  check_pointer(arg1);
+  check_pointer(arg2);
+  lock_acquire(&synch);
+  file_seek(get_descriptor(*arg1), *arg2);
+  lock_release(&synch);
+}
+void cmd_tell(struct intr_frame *f, uint32_t *arg1 UNUSED, uint32_t *arg2, uint32_t *arg3 UNUSED)
+{
+  check_pointer(arg1);
+  lock_acquire(&synch);
+  f->eax = file_tell(get_descriptor(*arg1));
+  lock_release(&synch);
+}
+void cmd_close(struct intr_frame *f, uint32_t *arg1 UNUSED, uint32_t *arg2, uint32_t *arg3 UNUSED)
+{
+  check_pointer(arg1);
+  lock_acquire(&synch);
+  file_close(remove_descriptor(*arg1));
+  lock_release(&synch);
+}
+void cmd_null(struct intr_frame *f, uint32_t *arg1, uint32_t *arg2 UNUSED, uint32_t *arg3 UNUSED)
+{
+  check_pointer(arg1);
+  f->eax = *arg1 + 1;
+}
+
+
+typedef cmd_fun_t (struct intr_frame *f, uint32_t *arg1, uint32_t *arg2, uint32_t *arg3); 
+
+typedef struct fun_desc {
+  cmd_fun_t *fun;
+  int cmd;
+} fun_desc_t;
+
+fun_desc_t cmd_table[] = {
+  {cmd_halt, SYS_HALT},
+  {cmd_exit, SYS_EXIT},
+  {cmd_exec, SYS_EXEC},
+  {cmd_wait, SYS_WAIT},
+  {cmd_write, SYS_WRITE},
+  {cmd_create, SYS_CREATE},
+  {cmd_remove, SYS_REMOVE},
+  {cmd_open, SYS_OPEN},
+  {cmd_filesize, SYS_FILESIZE},
+  {cmd_read, SYS_READ},
+  {cmd_seek, SYS_SEEK},
+  {cmd_tell, SYS_TELL},
+  {cmd_close, SYS_CLOSE},
+  {cmd_null, SYS_NULL},
+};
+
+int lookup(int cmd) 
+{
+  int i;
+  for (i=0; i < (sizeof(cmd_table)/sizeof(fun_desc_t)); i++) {
+    if (cmd_table[i].cmd == cmd) return i;
+  }
+  return -1;
+}
+
+
+void
+syscall_init (void) 
+{
+  intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  lock_init(&synch);;
+}
+
+
+
+static void
+syscall_handler (struct intr_frame *f UNUSED) 
+{
+  check_pointer(f->esp);
+  uint32_t* args = ((uint32_t*) f->esp);
+  int index = lookup(args[0]);
+  if (index >= 0) cmd_table[index].fun(f, args+1, args+2, args+3);
+}
